@@ -19,3 +19,4 @@ Written for Vencord Plugins
 - Optional: keep pinned messages, or only delete your own.
 - Individual REST deletes, so the 14-day bulk-delete limit doesn't apply.
 
+<img width="1306" height="216" alt="image" src="https://github.com/user-attachments/assets/ac65b315-8b08-4f46-b614-50a66ad0fe72" />
