@@ -20,3 +20,4 @@ Written for Vencord Plugins
 - Individual REST deletes, so the 14-day bulk-delete limit doesn't apply.
 
 <img width="1306" height="216" alt="image" src="https://github.com/user-attachments/assets/ac65b315-8b08-4f46-b614-50a66ad0fe72" />
+<img width="386" height="108" alt="image" src="https://github.com/user-attachments/assets/a96855e0-b773-4ead-98c3-69b0fb5b5200" />
