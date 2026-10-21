@@ -19,12 +19,3 @@ Written for Vencord Plugins
 - Optional: keep pinned messages, or only delete your own.
 - Individual REST deletes, so the 14-day bulk-delete limit doesn't apply.
 
-## Install
-
-1. Clone Vencord and install dependencies:
-
-   ```sh
-   git clone https://github.com/Vendicated/Vencord
-   cd Vencord
-   pnpm install
-   pnpm inject
