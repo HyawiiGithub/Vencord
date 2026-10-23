@@ -2,16 +2,8 @@
 
 Bulk-delete every message in a DM or group DM, from the channel context menu or `/wipe`.
 
-Progress is shown in a live status message in the channel, with Pause and Cancel buttons. The pace
-is read from Discord's own rate limit headers, so it sits at whatever your account's delete bucket
-allows instead of guessing, and a single failed request can never end a run.
-
-```
-▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱  61.4%
-4 879 / 7 948 deleted  (12 kept)
-3.8/s · 21m 04s elapsed · ETA 13m 12s
-bulk · 240ms · pass 2
-```
+Progress is shown in a live status message in the channel, with Pause and Cancel buttons.
+<img width="1250" height="156" alt="image" src="https://github.com/user-attachments/assets/d43b7fe8-e97d-478f-a7f9-1c37426a924f" />
 
 ## Usage
 
@@ -28,7 +20,7 @@ Right click a DM in the sidebar.
 | Send Crash Report | Files a report from current state |
 | DMWipe Stats | Lifetime counters and recent runs |
 
-Or run `/wipe` in the channel, with optional `limit`, `delay` and `dry` arguments.
+Or run `/wipe` in the channel, with optional `limit`, `delay` and `dry` args.
 
 ## Settings
 
@@ -57,5 +49,4 @@ Or run `/wipe` in the channel, with optional `limit`, `delay` and `dry` argument
 - Deleting is permanent and there is no undo. A dry run plus a backup costs about a minute.
 - Bulk deletes are used where Discord allows it, but only cover messages under two weeks old.
 - Messages you cannot delete in group DMs are counted as failed rather than stopping the run.
-- Goes in `src/userplugins/dmWipe/`, exactly one level deep. A `userplugins` folder nested inside
-  `src/plugins` breaks the build.
+- the backups wont "restore" your message go into settings to enable confirmation first.
