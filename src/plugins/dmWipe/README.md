@@ -1,7 +1,7 @@
 # DMWipe
 
 ![platform](https://img.shields.io/badge/platform-Vencord-8A2BE2?style=flat-square)
-![type](https://img.shields.io/badge/type-userplugin-blue?style=flat-square)
+![type](https://img.shields.io/badge/type-plugins/userplugins-blue?style=flat-square)
 ![version](https://img.shields.io/badge/version-1.2.0-green?style=flat-square)
 ![license](https://img.shields.io/badge/license-GPL--3.0--or--later-lightgrey?style=flat-square)
 
@@ -68,7 +68,14 @@ failed request end the run.
 - Lifetime stats with a per-run history.
 
 ---
+## Local Installation
 
+1. Clone Vencord and install dependencies.
+
+   ```sh
+   git clone https://github.com/Vendicated/Vencord
+   cd Vencord
+   pnpm install
 
 <img width="1306" height="216" alt="image" src="https://github.com/user-attachments/assets/ac65b315-8b08-4f46-b614-50a66ad0fe72" />
 <img width="386" height="108" alt="image" src="https://github.com/user-attachments/assets/a96855e0-b773-4ead-98c3-69b0fb5b5200" />
