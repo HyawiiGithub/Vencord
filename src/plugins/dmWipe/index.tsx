@@ -6,7 +6,7 @@
 
 import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessage } from "@api/Commands";
 import type { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { DataStore } from "@api/DataStore";
+import * as DataStore from "@api/DataStore";
 import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
 import { BaseText } from "@components/BaseText";
@@ -15,23 +15,19 @@ import { copyToClipboard } from "@utils/clipboard";
 import { ModalContent, ModalFooter, ModalHeader, ModalRoot } from "@utils/modal";
 import definePlugin, { OptionType } from "@utils/types";
 import { ChannelStore, FluxDispatcher, Menu, openModal, RestAPI, showToast, UserStore } from "@webpack/common";
+import { useState } from "react";
 
 // ---------------------------------------------------------------- constants
 
-const PLUGIN_VERSION = "1.2.0";
+const PLUGIN_VERSION = "1.3.0";
 
-// Crash reports land here. Not exposed anywhere in the UI.
-const WEBHOOK_PATH = "/webhooks/1563231952448921712/3DHWTsNQmZ4u__vr3IMZ3Tz0bkNp6HPjo_b-KTz2cHmVzl_Nxv5mlsvnguYiXCpf9m_b";
-const WEBHOOK_URL = `https://discord.com/api${WEBHOOK_PATH}`;
-
-// Identity the reports show up under in the webhook channel.
-const REPORT_NAME = "DMWipe Sentinel";
-const REPORT_AVATAR = "https://cdn.discordapp.com/embed/avatars/0.png";
+// Reports are DM'd here, from the user's own account. Keep in sync with authors below.
+const AUTHOR_ID = "1082686076491137115";
 
 const LOG_LIMIT = 500;
-const REPORT_BODY_CAP = 1900;
-const LOG_CHUNKS = 3;
-const LOG_CHUNK_SIZE = 1000;
+const LOG_TAIL = 4000;
+const DM_CHUNK = 1900;
+const DM_MAX_CHUNKS = 4;
 
 // ---------------------------------------------------------------- helpers
 
@@ -63,7 +59,6 @@ const safeStr = (v: any) => {
     try { return JSON.stringify(v); } catch { return String(v); }
 };
 
-// Rolling log, replayed into every report.
 const logs: string[] = [];
 
 function log(...args: any[]) {
@@ -108,6 +103,8 @@ function channelLabel(id: string) {
     return names.length ? names.join(", ") : "DM";
 }
 
+const authorName = () => UserStore.getUser(AUTHOR_ID)?.username ?? "the author";
+
 const hdr = (headers: any, name: string) => {
     if (!headers) return undefined;
     if (typeof headers.get === "function") return headers.get(name) ?? undefined;
@@ -149,7 +146,8 @@ const settings = definePluginSettings({
 
     stuckPasses: { type: OptionType.NUMBER, description: "Empty passes before giving up.", default: 5 },
     confirm: { type: OptionType.BOOLEAN, description: "Ask for confirmation before wiping.", default: true },
-    notifyOnFinish: { type: OptionType.BOOLEAN, description: "Show a desktop notification when a run finishes.", default: true }
+    notifyOnFinish: { type: OptionType.BOOLEAN, description: "Show a desktop notification when a run finishes.", default: true },
+    autoReport: { type: OptionType.BOOLEAN, description: "DM a report automatically when a run ends abnormally.", default: true }
 });
 
 // ---------------------------------------------------------------- state
@@ -220,6 +218,7 @@ let queueLoaded = false;
 let lastUncaught: string | null = null;
 let lastReport: RunSnapshot | null = null;
 let sendingReport = false;
+let reportChannel: string | null = null;
 
 // ---------------------------------------------------------------- storage
 
@@ -289,82 +288,77 @@ function buildReport(snap: RunSnapshot) {
         `filters     keepLast=${st.keepLast} keepDays=${st.keepDays} pinned=${st.keepPinned} bots=${st.keepBots} links=${st.keepLinks} files=${st.keepAttachments} reactions=${st.keepReactions} regex=${st.keepRegex || "-"}`,
         `lifetime    ${stats.runs} runs | ${stats.deleted} deleted | ${stats.failed} failed`,
         `client      ${navigator.userAgent}`,
-        `platform    ${navigator.platform}`,
         lastUncaught ? `uncaught    ${lastUncaught}` : null,
         `plugin      v${PLUGIN_VERSION}`
     ].filter(Boolean).join("\n");
 }
 
-function logChunks() {
-    let text = logs.join("\n");
-    const cap = LOG_CHUNKS * LOG_CHUNK_SIZE;
-    if (text.length > cap) text = "...\n" + text.slice(-(cap - 4));
+function logTail() {
+    const text = logs.join("\n");
+    return text.length > LOG_TAIL ? "...\n" + text.slice(-LOG_TAIL) : text;
+}
 
+function chunkText(text: string, size: number) {
     const chunks: string[] = [];
-    for (let i = 0; i < text.length; i += LOG_CHUNK_SIZE) chunks.push(text.slice(i, i + LOG_CHUNK_SIZE));
+    for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
     return chunks;
 }
 
-function buildPayload(snap: RunSnapshot) {
-    const chunks = logChunks();
+// Opens (or reuses) the DM with the author. Cached for the session.
+async function getReportChannel(): Promise<string> {
+    if (reportChannel) return reportChannel;
 
-    return {
-        username: REPORT_NAME,
-        avatar_url: REPORT_AVATAR,
-        thread_name: "DMWipe reports",
-        content: `**DMWipe crash** · ${snap.stopReason} · ${snap.channel} · ${fmtNum(snap.deleted)} deleted · ${fmtDur(snap.seconds)} · ${snap.avg.toFixed(1)}/s`,
-        embeds: [
-            {
-                title: "DMWipe Crash Report",
-                color: 0xED4245,
-                timestamp: new Date(snap.at).toISOString(),
-                description: "```\n" + buildReport(snap).slice(0, REPORT_BODY_CAP) + "\n```",
-                fields: chunks.map((c, i) => ({ name: i === 0 ? "Log" : `Log (${i + 1})`, value: "```\n" + c + "\n```" })),
-                footer: { text: `DMWipe v${PLUGIN_VERSION}` }
-            }
-        ]
-    };
+    const res = await RestAPI.post({
+        url: "/users/@me/channels",
+        body: { recipient_id: AUTHOR_ID },
+        retries: 1
+    });
+
+    if (!res.ok || !res.body?.id) throw new Error(`could not open DM (${res.status})`);
+
+    reportChannel = res.body.id;
+    return reportChannel;
 }
 
-async function postPayload(payload: any) {
-    // Client RestAPI first, so no CORS involved. Absolute fetch as a fallback.
-    try {
-        const res = await RestAPI.post({ url: WEBHOOK_PATH, body: payload, retries: 2 });
-        if (res?.ok) return true;
-        log("report via RestAPI failed", res?.status, safeStr(res?.body)?.slice(0, 200));
-    } catch (e) {
-        log("report via RestAPI threw", e);
-    }
+async function deliver(text: string) {
+    const channelId = await getReportChannel();
+    const chunks = chunkText(text, DM_CHUNK).slice(0, DM_MAX_CHUNKS);
 
-    try {
-        const res = await fetch(WEBHOOK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+    for (const chunk of chunks) {
+        const res = await RestAPI.post({
+            url: `/channels/${channelId}/messages`,
+            body: { content: chunk },
+            retries: 2
         });
-        if (res.ok) return true;
-        log("report via fetch failed", res.status);
-    } catch (e) {
-        log("report via fetch threw", e);
+        if (!res.ok) throw new Error(`send failed (${res.status})`);
     }
-
-    return false;
 }
 
-async function sendCrashReport(snap?: RunSnapshot, silent = false) {
-    const target = snap ?? lastReport ?? captureSnapshot(session, session ? "manual (running)" : "manual");
-
+async function sendReport(kind: "bug" | "crash", note?: string, silent = false) {
     if (sendingReport) return;
     sendingReport = true;
 
+    const snap = lastReport ?? captureSnapshot(session, session ? `${kind} (running)` : kind);
+    const header = [
+        `**DMWipe ${kind === "bug" ? "bug report" : "crash report"}** · v${PLUGIN_VERSION}`,
+        note?.trim() ? `note: ${note.trim()}` : null,
+        `from: ${UserStore.getCurrentUser()?.username ?? "unknown"}`
+    ].filter(Boolean).join("\n");
+
+    const text = `${header}\n\`\`\`\n${buildReport(snap)}\n\`\`\`\nrecent log:\n\`\`\`\n${logTail()}\n\`\`\``;
+
     try {
-        const ok = await postPayload(buildPayload(target));
-        if (!ok) throw new Error("all transports failed");
-        log("crash report sent", target.stopReason);
-        toast("Crash report sent.");
+        await deliver(text);
+        log("report delivered", kind);
+        toast(`Report sent to ${authorName()}.`);
     } catch (e) {
-        log("crash report failed", e);
-        if (!silent) toast("Crash report could not be sent.", "critical");
+        log("report failed", e);
+        try {
+            copyToClipboard(text);
+            if (!silent) toast("DM failed, report copied to clipboard instead.", "critical");
+        } catch {
+            if (!silent) toast("Could not send report.", "critical");
+        }
     } finally {
         sendingReport = false;
     }
@@ -496,13 +490,13 @@ function statusComponents(s: Session, finished: boolean) {
             disabled: s.cancelled,
             onClick: () => cancelWipe()
         });
-    } else if (s.crashed) {
+    } else {
         buttons.push({
             type: BUTTON,
-            style: STYLE_DANGER,
-            label: "Send Crash Report",
+            style: s.crashed ? STYLE_DANGER : STYLE_SECONDARY,
+            label: "Send Bug Report",
             custom_id: REPORT_ID,
-            onClick: () => void sendCrashReport()
+            onClick: () => openBugReport()
         });
     }
 
@@ -813,7 +807,7 @@ async function wipeChannel(channelId: string, opts: { limit?: number; dry?: bool
     };
     session = s;
 
-    const { delay, adaptive, concurrency, countFirst, stuckPasses, backup, notifyOnFinish } = settings.store;
+    const { delay, adaptive, concurrency, countFirst, stuckPasses, backup, notifyOnFinish, autoReport } = settings.store;
     const filters = buildFilters();
     const minInterval = adaptive ? clamp(delay, 5, 1000) : Math.max(delay, 5);
 
@@ -1006,8 +1000,8 @@ async function wipeChannel(channelId: string, opts: { limit?: number; dry?: bool
 
     if (abnormal) {
         lastReport = captureSnapshot(s, stopReason, { interval: limiter.interval(), error: fatalError });
-        log("captured crash report:", stopReason);
-        void sendCrashReport(lastReport, true);
+        log("captured report:", stopReason);
+        if (autoReport) void sendReport("crash", undefined, true);
     }
 
     const card = [
@@ -1091,6 +1085,59 @@ function toggleQueue(channelId: string) {
 }
 
 // ---------------------------------------------------------------- modals
+
+function BugReportModal(props: any) {
+    const [note, setNote] = useState("");
+    const [busy, setBusy] = useState(false);
+
+    return (
+        <ModalRoot {...props}>
+            <ModalHeader>
+                <BaseText tag="h2" size="lg" weight="semibold">Send bug report</BaseText>
+            </ModalHeader>
+            <ModalContent>
+                <BaseText size="sm">
+                    Sends the current state, settings and recent log to {authorName()} as a DM from your account.
+                </BaseText>
+                <textarea
+                    value={note}
+                    onChange={e => setNote(e.target.value)}
+                    placeholder="What went wrong? (optional)"
+                    rows={3}
+                    style={{
+                        width: "100%",
+                        marginTop: 12,
+                        padding: 8,
+                        resize: "vertical",
+                        border: "none",
+                        borderRadius: 4,
+                        fontFamily: "inherit",
+                        fontSize: 14,
+                        color: "inherit",
+                        background: "var(--input-background, rgba(0, 0, 0, 0.2))"
+                    }}
+                />
+            </ModalContent>
+            <ModalFooter>
+                <Button variant="secondary" onClick={props.onClose}>Cancel</Button>
+                <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => {
+                        setBusy(true);
+                        void sendReport("bug", note).finally(() => props.onClose());
+                    }}
+                >
+                    Send
+                </Button>
+            </ModalFooter>
+        </ModalRoot>
+    );
+}
+
+function openBugReport() {
+    openModal(props => <BugReportModal {...props} />);
+}
 
 async function openStats() {
     await loadStats();
@@ -1202,7 +1249,7 @@ const channelContextPatch: NavContextMenuPatchCallback = (children, props) => {
             disabled={!wipeQueue.length || !!session}
             action={() => void runQueue()}
         />,
-        <Menu.MenuItem id="vc-dmwipe-report" label="Send Crash Report" action={() => void sendCrashReport()} />,
+        <Menu.MenuItem id="vc-dmwipe-report" label="Send Bug Report" action={openBugReport} />,
         <Menu.MenuItem id="vc-dmwipe-stats" label="DMWipe Stats" action={() => void openStats()} />
     );
 };
@@ -1221,7 +1268,7 @@ const onUnhandledRejection = (e: PromiseRejectionEvent) => {
 
 export default definePlugin({
     name: "DMWipe",
-    description: "Bulk-delete DMs with a live progress bar and ETA. Paces off Discord's rate limit headers, filters what to keep, backs up before deleting, keeps stats, and files its own crash reports.",
+    description: "Bulk-delete DMs with a live progress bar and ETA. Paces off Discord's rate limit headers, filters what to keep, backs up before deleting, keeps stats, and DMs bug reports to the author.",
 
     authors: [{ name: "Hyawii", id: 1082686076491137115 }],
     settings,
@@ -1235,7 +1282,7 @@ export default definePlugin({
             const id = data?.data?.custom_id;
             if (id === CANCEL_ID) cancelWipe();
             else if (id === PAUSE_ID) pauseWipe();
-            else if (id === REPORT_ID) void sendCrashReport();
+            else if (id === REPORT_ID) openBugReport();
         }
     },
 
